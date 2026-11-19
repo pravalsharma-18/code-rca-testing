@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Talend job: load_settlements v0.2 (MIGRATED / BigQuery - the job that actually loads
+     sx_settlements_tgt). TARGET-side artifact for Code RCA in Scenario 4.
+     Contains the real migration defects (do not fix in this file - it IS the demo):
+       * the raw-input filter changed from "status <> 'CANCELLED'" to
+         "status = 'ACTIVE'" (see tBigQueryInput_1 QUERY) - PARTIAL rows silently drop;
+       * the per-settlement adjustments pre-aggregation from v0.1 was removed, and the
+         tMap lookup matching changed to ALL_MATCHES (see tMap_1 nodeData) - a
+         settlement with two adjustment records fans out into duplicate rows.
+     The formatting expressions (toLowerCase, %-8s pad, dd/MM/yyyy, boolean/numeric
+     toString, '' remarks) are representation choices reconcilable with mapping
+     expressions - not row-loss defects. -->
+<talendfile:ProcessType xmlns:xmi="http://www.omg.org/XMI"
+    xmlns:talendfile="platform:/resource/org.talend.model/model/TalendFile.xsd"
+    defaultContext="Default" jobType="Standard">
+  <context confirmationNeeded="false" name="Default">
+    <contextParameter comment="BigQuery target dataset" name="bq_dataset" prompt="Dataset?" type="id_String" value="pelican_demo_tgt"/>
+  </context>
+  <parameters>
+    <elementParameter field="TEXT" name="JOB_NAME" value="load_settlements"/>
+    <elementParameter field="TEXT" name="JOB_VERSION" value="0.2"/>
+    <elementParameter field="TEXT" name="PURPOSE" value="Load settlement records net of adjustments into sx_settlements_tgt (migrated from Teradata job v0.1)"/>
+  </parameters>
+
+  <node componentName="tBigQueryInput" componentVersion="1.4" posX="64" posY="96">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tBigQueryInput_1"/>
+    <elementParameter field="TEXT" name="LABEL" value="read_settlements_raw"/>
+    <elementParameter field="MEMO_SQL" name="QUERY"
+      value="&quot;SELECT settlement_id, order_id, invoice_ref, channel, settled_on, is_reconciled, tax_amount, remarks, gross_amount, fee_amount, status FROM `&quot; + context.bq_dataset + &quot;.sx_settlements_raw` WHERE status = 'ACTIVE'&quot;"/>
+    <metadata connector="FLOW" name="row_raw">
+      <column key="true"  length="16" name="settlement_id" nullable="false" type="id_String"/>
+      <column key="false" length="16" name="order_id"      nullable="false" type="id_String"/>
+      <column key="false" length="32" name="invoice_ref"   nullable="true"  type="id_String"/>
+      <column key="false" length="8"  name="channel"       nullable="true"  type="id_String"/>
+      <column key="false" name="settled_on" nullable="true" pattern="&quot;yyyy-MM-dd&quot;" type="id_Date"/>
+      <column key="false" name="is_reconciled" nullable="true" type="id_Boolean"/>
+      <column key="false" length="12" name="tax_amount"    nullable="true"  precision="2" type="id_BigDecimal"/>
+      <column key="false" length="256" name="remarks"      nullable="true"  type="id_String"/>
+      <column key="false" length="12" name="gross_amount"  nullable="true"  precision="2" type="id_BigDecimal"/>
+      <column key="false" length="12" name="fee_amount"    nullable="true"  precision="2" type="id_BigDecimal"/>
+      <column key="false" length="12" name="status"        nullable="true"  type="id_String"/>
+    </metadata>
+  </node>
+
+  <!-- Raw adjustments feed the tMap lookup DIRECTLY: the v0.1 per-settlement rollup
+       (tAggregateRow "adjustments_per_settlement") was not carried over in the migration. -->
+  <node componentName="tBigQueryInput" componentVersion="1.4" posX="64" posY="256">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tBigQueryInput_2"/>
+    <elementParameter field="TEXT" name="LABEL" value="read_adjustments"/>
+    <elementParameter field="MEMO_SQL" name="QUERY"
+      value="&quot;SELECT settlement_id, adj_amount FROM `&quot; + context.bq_dataset + &quot;.sx_adjustments`&quot;"/>
+    <metadata connector="FLOW" name="row_adj">
+      <column key="false" length="16" name="settlement_id" nullable="false" type="id_String"/>
+      <column key="false" length="12" name="adj_amount"    nullable="true"  precision="2" type="id_BigDecimal"/>
+    </metadata>
+  </node>
+
+  <node componentName="tMap" componentVersion="2.4" posX="400" posY="96">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tMap_1"/>
+    <elementParameter field="TEXT" name="LABEL" value="join_adjustments"/>
+    <nodeData xsi:type="mapper:MapperData" xmlns:mapper="http://www.talend.org/mapper"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <inputTables name="row_raw" lookupMode="LOAD_ONCE" matchingMode="UNIQUE_MATCH" innerJoin="false"/>
+      <inputTables name="row_adj" lookupMode="LOAD_ONCE" matchingMode="ALL_MATCHES" innerJoin="false">
+        <mapperTableEntries expression="row_raw.settlement_id" name="settlement_id" type="id_String"/>
+      </inputTables>
+      <outputTables name="out_settlements">
+        <mapperTableEntries expression="row_raw.settlement_id" name="settlement_id" type="id_String"/>
+        <mapperTableEntries expression="row_raw.order_id"      name="order_id"      type="id_String"/>
+        <mapperTableEntries expression="row_raw.invoice_ref.toLowerCase()"
+                            name="invoice_ref" type="id_String"/>
+        <mapperTableEntries expression="String.format(&quot;%-8s&quot;, row_raw.channel)"
+                            name="channel" type="id_String"/>
+        <mapperTableEntries expression="TalendDate.formatDate(&quot;dd/MM/yyyy&quot;, row_raw.settled_on)"
+                            name="settled_on" type="id_String"/>
+        <mapperTableEntries expression="String.valueOf(row_raw.is_reconciled)"
+                            name="is_reconciled" type="id_String"/>
+        <mapperTableEntries expression="row_raw.tax_amount.stripTrailingZeros().toPlainString()"
+                            name="tax_amount" type="id_String"/>
+        <mapperTableEntries expression="row_raw.remarks"
+                            name="remarks" type="id_String"/>
+        <mapperTableEntries expression="row_raw.gross_amount"  name="gross_amount" type="id_BigDecimal"/>
+        <mapperTableEntries expression="row_raw.fee_amount"    name="fee_amount"   type="id_BigDecimal"/>
+        <mapperTableEntries expression="row_raw.gross_amount.subtract(row_raw.fee_amount).subtract(row_adj.adj_amount == null ? java.math.BigDecimal.ZERO : row_adj.adj_amount)"
+                            name="net_amount" type="id_BigDecimal"/>
+      </outputTables>
+    </nodeData>
+  </node>
+
+  <node componentName="tBigQueryOutput" componentVersion="1.4" posX="576" posY="96">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tBigQueryOutput_1"/>
+    <elementParameter field="TEXT" name="LABEL" value="write_settlements"/>
+    <elementParameter field="TEXT" name="DATASET" value="context.bq_dataset"/>
+    <elementParameter field="TEXT" name="TABLE" value="&quot;sx_settlements_tgt&quot;"/>
+    <elementParameter field="CLOSED_LIST" name="TABLE_ACTION" value="TRUNCATE"/>
+    <elementParameter field="CLOSED_LIST" name="DATA_ACTION" value="INSERT"/>
+  </node>
+
+  <connection connectorName="FLOW" label="row_raw"         lineStyle="0" source="tBigQueryInput_1" target="tMap_1"/>
+  <connection connectorName="FLOW" label="row_adj"         lineStyle="2" source="tBigQueryInput_2" target="tMap_1"/>
+  <connection connectorName="FLOW" label="out_settlements" lineStyle="0" source="tMap_1"           target="tBigQueryOutput_1"/>
+</talendfile:ProcessType>
